@@ -1,2 +1,5 @@
+CMD_VERSION = 'version'
 CMD_START = 'start'
 CMD_REFRESH = 'refresh'
+CMD_SETUP = 'setup'
+CMD_PASSWORD = 'password'

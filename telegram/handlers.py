@@ -1,21 +1,22 @@
+import asyncio
+import json
 from datetime import datetime
 from functools import wraps
-from typing import Union, Optional
+from typing import Union, Optional, Dict
 
 import aiogram
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
+from loguru import logger
 
-from . import commands
+from . import commands, states
 from . import keyboards
 from . import messages
 from . import settings
-from .states import UserStates
-from .tools import logger as logging
 
-logger = logging.get_logger('handlers')
 bot = aiogram.Bot(token=settings.TOKEN)
 dispatcher = aiogram.Dispatcher(bot, storage=MemoryStorage())
+
 
 def prefix_uri(msg: aiogram.types.Message) -> str:
     return f'{msg.from_user.id}@{msg.chat.id}'
@@ -80,8 +81,8 @@ async def send_to(recipient: str, chat_id: Union[str, int], msg: str):
     try:
         await bot.send_message(chat_id=chat_id, text=msg)
     except Exception as e:
-        logger.exception(
-            f'[send_to] Chat [{chat_id}] Unable to send message: {e}')
+        msg = f'[send_to] Chat [{chat_id}] Unable to send message: {e}'
+        logger.exception(msg)
 
 
 async def send_to_managers(msg: str):
@@ -116,9 +117,9 @@ async def send_reply(message, text, markup=None, state=None):
         logger.debug(f'{prefix} State is <{status}>.')
 
 
-@dispatcher.message_handler(commands=['version'], state='*')
+@dispatcher.message_handler(commands=[commands.CMD_VERSION], state='*')
 async def send_version(message: aiogram.types.Message):
-    """ Выводит информацию о версии бота и его аптайме. """
+    """ Выводит информацию о версии бота и его аптайме """
     diff = datetime.utcnow() - settings.STARTED_IN
     days = diff.days
     if days == 0:
@@ -131,7 +132,20 @@ async def send_version(message: aiogram.types.Message):
     await send_reply(message, messages.MSG_VERSION.format(
         version=settings.VERSION, commit=settings.COMMIT,
         uptime=uptime_str,
-        started_in=settings.STARTED_IN.strftime('%y/%m/%d %H:%M:%S UTC')))
+        started_in=settings.STARTED_IN.strftime('%y/%m/%d %H:%M:%S UTC'),
+        user_id=message.from_user.id))
+
+
+@restart_on_exception
+async def show_start_page(message: aiogram.types.Message, state: FSMContext,
+                          prefix: Optional[str] = None):
+    logger.debug(f'{prefix} Show start page')
+    await bot.send_message(
+        message.from_user.id, messages.MSG_GREETING,
+        reply_markup=keyboards.keyboard_greeting())
+    await bot.send_message(
+        message.from_user.id, 'Действия',
+        reply_markup=keyboards.keyboard_actions(message))
 
 
 @dispatcher.message_handler(commands=[commands.CMD_START], state='*')
@@ -139,9 +153,9 @@ async def reset_bot(message: aiogram.types.Message, state: FSMContext):
     prefix = f'[{prefix_uri(message)}] [reset_bot]'
     await state.finish()
     logger.debug(f'{prefix} Reset state')
-
-    await UserStates.initial.set()
+    await states.Mode.ready.set()
     await show_start_page(message, state)
+
 
 
 @dispatcher.callback_query_handler(
@@ -152,12 +166,66 @@ async def callback_reset_bot(query: aiogram.types.CallbackQuery,
     await reset_bot(query.message, state)
 
 
-@dispatcher.message_handler(state=UserStates.initial)
+@dispatcher.message_handler(commands=[commands.CMD_SETUP], state=states.Mode.ready)
+async def process_setup(message: aiogram.types.Message, state: FSMContext):
+    """ Обрабатывает запрос настройки """
+    is_admin = settings.admin_required(message)
+    if not is_admin:
+        return
+    cutlen = len(commands.CMD_SETUP) + 1  # 'count / prefix
+    payload = message.text[cutlen:].strip()
+    logger.debug(f'Payload: {payload}')
+    payload = payload.replace('\'', '"')
+    logger.debug(f'Payload: {payload}')
+
+    try:
+        data = json.loads(payload)
+        settings.mapping_add(data)
+    except settings.MappingException as e:
+        await send_reply(message, e)
+    except Exception as e:
+        logger.exception(e)
+    await show_start_page(message, state)
+
+
+@dispatcher.callback_query_handler(
+    keyboards.callbacks.filter(action=commands.CMD_PASSWORD),
+    state=states.Mode.ready)
 @restart_on_exception
-async def show_start_page(message: aiogram.types.Message, state: FSMContext,
-                          prefix: Optional[str] = None):
-    data = await state.get_data()
-    logger.debug(f'{prefix} Show start page')
-    await bot.send_message(
-        message.from_user.id, messages.MSG_GREETING,
-        reply_markup=keyboards.keyboard_greeting())
+async def callback_password_chosen(
+        query: aiogram.types.CallbackQuery,
+        callback_data: dict, state: FSMContext, prefix: str=None):
+    """ Обрабатывает выбранный тип генерации пароля """
+    value = callback_data['value']
+    await bot.answer_callback_query(
+        query.id, text=f'Выбрано действие: {value}')
+
+    func = settings.HANDLER_MAPPING[value]
+    result = func()
+    await bot.send_message(query.from_user.id, result)
+
+
+@dispatcher.callback_query_handler(
+    keyboards.callbacks.filter(),
+    state=states.Mode.ready)
+@restart_on_exception
+async def callback_admin_chosen(
+        query: aiogram.types.CallbackQuery,
+        callback_data: dict, state: FSMContext, prefix: str=None):
+    """ Обрабатывает выбранный тип генерации пароля """
+    action = callback_data['action']
+    value = callback_data['value']
+    cmd = f'{action} {value}'
+    await bot.answer_callback_query(
+        query.id, text=f'Выбрано действие: {cmd}')
+
+    p = await asyncio.create_subprocess_shell(
+        cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE)
+    stdout, stderr = await p.communicate()
+    logger.info(f'Result: {p.returncode}')
+    if stdout:
+        logger.debug(f'[stdout] {stdout.decode()}')
+    if stderr:
+        logger.debug(f'[stderr] {stderr.decode()}')

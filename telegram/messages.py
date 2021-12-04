@@ -2,6 +2,7 @@ MSG_VERSION = """Demo Bot
 Version: {version}
 Commit: {commit}
 Uptime: {uptime} from {started_in}
+User ID: {user_id}
 """
 
 MSG_GREETING = """Привет!
