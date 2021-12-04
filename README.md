@@ -22,14 +22,19 @@
 
 Например:
 
-    pyenv local 3.8.0
+    pyenv local 3.8.12
     pyenv exec python -m pipenv install
     pipenv sync -d
 
 Для интеграции данного сервиса с Telegram следует:
 * Создать новый бот с помощью команды @BotFather `/newbot`;
 
+## Развёртывание
+
+Описано в документе [DEPLOY](./deploy.md).
+
 # Лицензия
+
 (c) 2020 HALFAKOP.
 
 [aiogram]: <https://docs.aiogram.dev/>
